@@ -1,0 +1,97 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+#          - macos-latest  # TODO: port to macos as well
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@413f03770abfddd5c78b40183e7f2acd5cab5732
+        with:
+          version: 1.3.296.0
+          cache: true
+
+      - name: Configure CMake
+        run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build ${{github.workspace}}/build --config Release
+
+      - name: Prepare and archive artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          mkdir artifact
+          copy build\Release\vk-deviceinfo.exe artifact\
+          7z a vk-deviceinfo-${{ github.ref_name }}-${{ matrix.os }}.zip .\artifact\*
+
+      - name: Prepare and archive artifact (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir artifact
+          cp build/vk-deviceinfo artifact/
+          tar -czvf vk-deviceinfo-${{ github.ref_name }}-${{ matrix.os }}.tar.gz -C artifact .
+
+      - name: Prepare and archive artifact (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir artifact
+          cp build/vk-deviceinfo artifact/
+          tar -czvf vk-deviceinfo-${{ github.ref_name }}-${{ matrix.os }}.tar.gz -C artifact .
+
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vk-deviceinfo-${{ github.ref_name }}-${{ matrix.os }}
+          path: vk-deviceinfo-${{ github.ref_name }}-${{ matrix.os }}.*
+
+  create_release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Extract changelog for version
+        id: extract_changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -n "/## \[$VERSION\]/,/## \[/p" CHANGELOG.md | sed '1,2d;$d' > RELEASE_CHANGELOG.md
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir release_assets
+          find ./artifacts -name 'vk-deviceinfo-*.*' -exec cp {} ./release_assets/ \;
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body_path: RELEASE_CHANGELOG.md
+          draft: false
+          prerelease: false
+          make_latest: true
+          token: ${{ secrets.RELEASE_PERSONAL_ACCESS_TOKEN }}
+          files: ./release_assets/*
